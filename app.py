@@ -560,11 +560,14 @@ def main():
     st.sidebar.markdown("## Query Studio")
     st.sidebar.caption("AI-powered PostgreSQL intelligence")
     st.sidebar.markdown("### Workspace")
-    app_mode = st.sidebar.selectbox(
+    app_mode = st.sidebar.radio(
         "Choose Mode",
-        ["Upload Plan", "Live Query", "Model Info", "Sample Analysis", "Activity Logs"]
+        ["📂 Upload Plan", "🔌 Live Query", "📊 Model Info", "🧪 Sample Analysis", "📋 Activity Logs"],
+        label_visibility="visible"
     )
-    
+    # Normalize mode name (strip emoji prefix for comparisons)
+    app_mode = app_mode.split(" ", 1)[1] if " " in app_mode else app_mode
+
     st.sidebar.markdown("---")
     st.sidebar.markdown("### ⚡ AI Engine Mode")
     
