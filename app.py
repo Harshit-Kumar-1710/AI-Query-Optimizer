@@ -499,17 +499,29 @@ def load_model_metrics():
         return None
 
 def log_event(event_type, message, level="INFO"):
-    """Persist safe app activity; never write API keys, passwords, or query results."""
+    """Store safe app activity in session state; never write API keys, passwords, or query results."""
     try:
-        with sqlite3.connect(LOG_DB) as conn:
-            conn.execute("""CREATE TABLE IF NOT EXISTS app_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT,
-                level TEXT, event_type TEXT, message TEXT
-            )""")
-            conn.execute(
-                "INSERT INTO app_events (created_at, level, event_type, message) VALUES (?, ?, ?, ?)",
-                (datetime.now().isoformat(timespec="seconds"), level, event_type, message[:500]),
-            )
+        if "activity_log" not in st.session_state:
+            st.session_state.activity_log = []
+        st.session_state.activity_log.append({
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "level": level,
+            "event_type": event_type,
+            "message": str(message)[:500],
+        })
+        # Also try SQLite as secondary store (works locally, silently fails on cloud)
+        try:
+            with sqlite3.connect(LOG_DB) as conn:
+                conn.execute("""CREATE TABLE IF NOT EXISTS app_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT,
+                    level TEXT, event_type TEXT, message TEXT
+                )""")
+                conn.execute(
+                    "INSERT INTO app_events (created_at, level, event_type, message) VALUES (?, ?, ?, ?)",
+                    (datetime.now().isoformat(timespec="seconds"), level, event_type, str(message)[:500]),
+                )
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -517,24 +529,31 @@ def log_event(event_type, message, level="INFO"):
 def activity_logs_mode():
     st.header("Activity Logs")
     st.caption("App events only. API keys, passwords, and query result data are never recorded here.")
-    if not os.path.exists(LOG_DB):
+
+    # Build combined log from session state + SQLite (if available)
+    logs_list = list(st.session_state.get("activity_log", []))
+    try:
+        if os.path.exists(LOG_DB):
+            with sqlite3.connect(LOG_DB) as conn:
+                db_logs = pd.read_sql_query(
+                    "SELECT created_at, level, event_type, message FROM app_events ORDER BY id DESC LIMIT 250", conn
+                )
+                logs_list = db_logs.to_dict("records") + logs_list
+    except Exception:
+        pass
+
+    if not logs_list:
         st.info("No activity has been recorded yet. Run an analysis or generate an AI recommendation to begin.")
         return
-    try:
-        with sqlite3.connect(LOG_DB) as conn:
-            logs = pd.read_sql_query("SELECT created_at, level, event_type, message FROM app_events ORDER BY id DESC LIMIT 250", conn)
-        if logs.empty:
-            st.info("No activity has been recorded yet.")
-            return
-        levels = ["All"] + sorted(logs["level"].dropna().unique().tolist())
-        selected_level = st.selectbox("Filter by level", levels)
-        if selected_level != "All":
-            logs = logs[logs["level"] == selected_level]
-        st.metric("Recorded events", len(logs))
-        st.dataframe(logs, use_container_width=True, hide_index=True)
-        st.download_button("Download activity logs", logs.to_csv(index=False), "ai_query_optimizer_logs.csv", "text/csv")
-    except Exception as error:
-        st.warning("Activity logs are temporarily unavailable. New events will continue to be captured when possible.")
+
+    logs = pd.DataFrame(logs_list).drop_duplicates().sort_values("created_at", ascending=False).head(250)
+    levels = ["All"] + sorted(logs["level"].dropna().unique().tolist())
+    selected_level = st.selectbox("Filter by level", levels)
+    if selected_level != "All":
+        logs = logs[logs["level"] == selected_level]
+    st.metric("Recorded events", len(logs))
+    st.dataframe(logs, use_container_width=True, hide_index=True)
+    st.download_button("Download activity logs", logs.to_csv(index=False), "ai_query_optimizer_logs.csv", "text/csv")
 
 # Main app
 def main():
