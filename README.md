@@ -1,6 +1,11 @@
 # 🚀 AI Query Optimizer
 
-A modern, machine learning and LLM-powered database performance platform built with **Python**, **FastAPI**, **PostgreSQL**, **XGBoost**, and **Streamlit**. It turns complex execution plan trees into readable developer diagnostics, compares PostgreSQL cardinality estimates against an ML model, and suggests safe database tuning recommendations.
+[![Live Demo](https://img.shields.io/badge/🚀%20Live%20Demo-Streamlit-ff4b4b?style=for-the-badge&logo=streamlit)](https://ai-query-optimizer-bqjpn7ckxyb7p5mhtrab6y.streamlit.app/)
+[![GitHub](https://img.shields.io/badge/GitHub-Harshit--Kumar--1710-181717?style=for-the-badge&logo=github)](https://github.com/Harshit-Kumar-1710/AI-Query-Optimizer)
+
+> 🌐 **Live App:** https://ai-query-optimizer-bqjpn7ckxyb7p5mhtrab6y.streamlit.app/
+
+A modern, machine learning and LLM-powered database performance platform built with **Python**, **PostgreSQL**, **XGBoost**, and **Streamlit**. It turns complex execution plan trees into readable developer diagnostics, compares PostgreSQL cardinality estimates against an ML model, and suggests safe database tuning recommendations.
 
 ---
 
