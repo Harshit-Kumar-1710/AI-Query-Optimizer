@@ -578,7 +578,7 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🔑 API Key Management")
     
-    environment_key = load_environment_key()
+    environment_key = load_secret_value("GEMINI_API_KEY")
     if environment_key:
         st.sidebar.success("Gemini key loaded from environment")
     else:
