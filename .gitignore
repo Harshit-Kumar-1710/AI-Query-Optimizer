@@ -1,0 +1,19 @@
+# Secrets & Configuration
+.gemini_key.json
+.env
+.streamlit/secrets.toml
+
+# Local app SQLite databases
+*.db
+
+# Large / Extracted database artifacts
+dvdrental.zip
+dvdrental/
+dvdrental_extracted/
+node_features.csv
+
+# Python virtual environment & cache
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
