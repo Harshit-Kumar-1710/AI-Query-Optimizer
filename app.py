@@ -42,7 +42,7 @@ if "db_host" not in st.session_state:
 if "db_port" not in st.session_state:
     st.session_state.db_port = load_secret_value("DB_PORT", "5432")
 if "db_name" not in st.session_state:
-    st.session_state.db_name = load_secret_value("DB_NAME", "dvd_rental")
+    st.session_state.db_name = load_secret_value("DB_NAME", "neondb")
 if "db_user" not in st.session_state:
     st.session_state.db_user = load_secret_value("DB_USER", "postgres")
 if "db_password" not in st.session_state:
