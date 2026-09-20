@@ -48,7 +48,7 @@ if "db_user" not in st.session_state:
 if "db_password" not in st.session_state:
     st.session_state.db_password = load_secret_value("DB_PASSWORD", "")
 if "db_sslmode" not in st.session_state:
-    st.session_state.db_sslmode = load_secret_value("DB_SSLMODE", "prefer")
+    st.session_state.db_sslmode = load_secret_value("DB_SSLMODE", "require")
 if "gemini_api_key" not in st.session_state:
     st.session_state.gemini_api_key = load_secret_value("GEMINI_API_KEY", "")
 if "ai_engine_mode" not in st.session_state:
@@ -1004,9 +1004,8 @@ def extract_json_response(text):
 def get_structured_ai_review(query, plan_json, api_key):
     """Use Gemini for a predictable, UI-ready query review."""
     try:
-        prompt = f"""
-You are a PostgreSQL performance reviewer. Review the SQL and JSON execution-plan summary below.
-Return ONLY a JSON object with exactly these keys:
+        prompt = f"""You are a PostgreSQL performance reviewer. Review the SQL and JSON execution-plan summary below.
+Return ONLY a valid JSON object (no markdown, no explanation, no extra text) with exactly these keys:
 - risk_level: one of Low, Medium, High
 - score: integer from 0 to 100, where 100 means safest
 - summary: one concise plain-English sentence
@@ -1016,7 +1015,7 @@ Return ONLY a JSON object with exactly these keys:
 SQL: {query}
 PLAN: {str(plan_json)[:2200]}
 """
-        raw = generate_gemini_response(api_key, prompt, response_mime_type="application/json")
+        raw = generate_gemini_response(api_key, prompt)
         review = extract_json_response(raw)
         if review:
             review.setdefault("anti_patterns", [])
@@ -1103,7 +1102,7 @@ def save_analysis(query, results_df, plan_json):
             )""")
             conn.execute("""INSERT OR IGNORE INTO analyses VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", (
                 fingerprint, datetime.now().isoformat(timespec="seconds"), query[:1000], pg_error, ai_error,
-                improvement, root.get("Total Cost", 0), plan_json[0].get("Execution Time", 0) if plan_json else 0
+                improvement, root.get("Total Cost", 0), (plan_json[0].get("Execution Time", 0) if isinstance(plan_json, list) and plan_json else 0)
             ))
     except Exception:
         log_event("ANALYSIS_HISTORY", "Local history could not be saved.", "WARNING")
@@ -1193,8 +1192,8 @@ def render_rewrite_lab(query, plan_json):
                             c1, c2, c3 = st.columns(3)
                             c1.metric("Original cost", f"{original_root.get('Total Cost', 0):,.2f}")
                             c2.metric("Rewrite cost", f"{candidate_root.get('Total Cost', 0):,.2f}")
-                            original_time = plan_json[0].get("Execution Time", 0) if plan_json else 0
-                            candidate_time = candidate_plan[0].get("Execution Time", 0) if candidate_plan else 0
+                            original_time = plan_json[0].get("Execution Time", 0) if isinstance(plan_json, list) and plan_json else 0
+                            candidate_time = candidate_plan[0].get("Execution Time", 0) if isinstance(candidate_plan, list) and candidate_plan else 0
                             c3.metric("Execution time", f"{original_time:.2f} ms → {candidate_time:.2f} ms")
                         except Exception as e:
                             st.error(f"Could not compare the rewrite: {e}")
