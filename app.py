@@ -47,6 +47,8 @@ if "db_user" not in st.session_state:
     st.session_state.db_user = load_secret_value("DB_USER", "postgres")
 if "db_password" not in st.session_state:
     st.session_state.db_password = load_secret_value("DB_PASSWORD", "")
+if "db_sslmode" not in st.session_state:
+    st.session_state.db_sslmode = load_secret_value("DB_SSLMODE", "prefer")
 if "gemini_api_key" not in st.session_state:
     st.session_state.gemini_api_key = load_secret_value("GEMINI_API_KEY", "")
 if "ai_engine_mode" not in st.session_state:
@@ -66,64 +68,45 @@ MODEL_DIR = os.path.join(APP_DIR, "models_improved")
 DATA_FILE = os.path.join(APP_DIR, "data", "processed", "lce_training_data_fixed.csv")
 HISTORY_DB = os.path.join(APP_DIR, "analysis_history.db")
 LOG_DB = os.path.join(APP_DIR, "app_activity.db")
-def generate_gemini_response(genai, prompt):
-    # Check if a working model name was already found and cached for this session
-    cached_name = st.session_state.get("cached_gemini_model_name", None)
-    if cached_name:
-        try:
-            model = genai.GenerativeModel(cached_name)
-            res = model.generate_content(prompt)
-            if res and res.text:
-                return res.text
-        except Exception:
-            st.session_state.cached_gemini_model_name = None
+def validate_gemini_api_key(api_key):
+    """Reject OAuth tokens early; Gemini expects a Gemini API key, not a login token."""
+    key = (api_key or "").strip()
+    if not key:
+        raise ValueError("Gemini is not configured. Add GEMINI_API_KEY in Streamlit secrets or paste a key for this session.")
+    if key.lower().startswith(("bearer ", "ya29.", "eyj")):
+        raise ValueError(
+            "This looks like a Google OAuth access token, not a Gemini API key. "
+            "Create/copy a Gemini API key from Google AI Studio and save that value as GEMINI_API_KEY."
+        )
+    if any(character.isspace() for character in key):
+        raise ValueError("The Gemini API key contains whitespace. Paste only the key value, without quotes or 'Bearer'.")
+    return key
 
-    # Step 1: Query API to find exact valid models for this user's API Key
-    try:
-        available = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        for m_name in available:
-            try:
-                model = genai.GenerativeModel(m_name)
-                res = model.generate_content(prompt)
-                if res and res.text:
-                    st.session_state.cached_gemini_model_name = m_name
-                    return res.text
-            except Exception:
-                continue
-    except Exception:
-        pass
 
-    # Step 2: Expanded fallbacks including models/ prefix and modern flash variants
-    candidate_names = [
-        "models/gemini-1.5-flash-8b",
-        "models/gemini-1.5-flash-002",
-        "models/gemini-2.0-flash-exp",
-        "models/gemini-1.5-flash-latest",
-        "models/gemini-1.5-flash",
-        "models/gemini-pro",
-        "gemini-1.5-flash-8b",
-        "gemini-1.5-flash-002",
-        "gemini-1.5-flash",
-        "gemini-pro"
-    ]
-    last_err = None
-    for name in candidate_names:
-        try:
-            model = genai.GenerativeModel(name)
-            res = model.generate_content(prompt)
-            if res and res.text:
-                st.session_state.cached_gemini_model_name = name
-                return res.text
-        except Exception as e:
-            last_err = e
-            continue
-    raise last_err or Exception("Could not connect to any available Gemini API model.")
+def generate_gemini_response(api_key, prompt, response_mime_type=None):
+    """Generate text through Google's current Gemini SDK with one stable model choice."""
+    from google import genai
+    from google.genai import types
+
+    key = validate_gemini_api_key(api_key)
+    model_name = load_secret_value("GEMINI_MODEL", "gemini-2.5-flash")
+    config = types.GenerateContentConfig(
+        temperature=0.2,
+        response_mime_type=response_mime_type,
+    )
+    client = genai.Client(api_key=key)
+    response = client.models.generate_content(
+        model=model_name,
+        contents=prompt,
+        config=config,
+    )
+    text = (getattr(response, "text", None) or "").strip()
+    if not text:
+        raise ValueError("Gemini returned no text. Check the selected model, quota, and API key permissions.")
+    return text
 
 def get_llm_insights(query, plan_json, api_key):
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        
         prompt = f"""
         You are an expert PostgreSQL Database Administrator and AI Query Optimizer.
         
@@ -139,17 +122,40 @@ def get_llm_insights(query, plan_json, api_key):
         2. 🧠 **Plain English Plan**: In 2 simple sentences, what is the database actually doing behind the scenes?
         3. ⚡ **Optimization Advice**: How can we make this faster? (e.g. suggesting an index on a specific column).
         """
-        return generate_gemini_response(genai, prompt)
+        return generate_gemini_response(api_key, prompt)
     except Exception as e:
         return f"❌ **Could not generate AI insights.** Ensure your Gemini API Key is correct. Error: {str(e)}"
 
 def is_safe_select(sql):
     """Allow exactly one read-only SELECT statement for AI-generated SQL."""
-    candidate = sql.strip().rstrip(";").strip()
-    if "`" in candidate or not re.match(r"(?is)^select\b", candidate) or not re.search(r"(?is)\bfrom\b", candidate):
+    candidate = (sql or "").strip()
+    if not candidate or candidate.count(";") > 1 or ";" in candidate.rstrip(";"):
+        return False
+    candidate = candidate.rstrip(";").strip()
+    if "`" in candidate or "--" in candidate or "/*" in candidate or not re.match(r"(?is)^select\b", candidate) or not re.search(r"(?is)\bfrom\b", candidate):
         return False
     prohibited = r"\b(insert|update|delete|drop|alter|create|grant|revoke|truncate|copy|call|do)\b"
     return not bool(re.search(prohibited, candidate, flags=re.IGNORECASE))
+
+
+def get_root_plan(plan_json):
+    """Accept PostgreSQL's usual EXPLAIN JSON list and fail clearly for malformed uploads."""
+    if isinstance(plan_json, list) and plan_json and isinstance(plan_json[0], dict) and isinstance(plan_json[0].get("Plan"), dict):
+        return plan_json[0]["Plan"]
+    raise ValueError("Expected PostgreSQL EXPLAIN (ANALYZE, FORMAT JSON) output containing a top-level Plan object.")
+
+
+def connect_postgres():
+    """Create a bounded, SSL-aware read-only analysis connection."""
+    return psycopg2.connect(
+        host=st.session_state.db_host,
+        port=int(st.session_state.db_port or 5432),
+        dbname=st.session_state.db_name,
+        user=st.session_state.db_user,
+        password=st.session_state.db_password,
+        sslmode=st.session_state.db_sslmode,
+        connect_timeout=10,
+    )
 
 
 def extract_clean_sql(text):
@@ -207,9 +213,6 @@ def convert_english_to_sql(english_text, api_key):
             return "SELECT c.first_name, c.last_name, COUNT(p.payment_id) as payment_count FROM customer c JOIN payment p ON c.customer_id = p.customer_id GROUP BY c.customer_id HAVING COUNT(p.payment_id) > 10 LIMIT 15;"
         return "SELECT f.title, f.length, f.rating FROM film f WHERE f.length > 120 ORDER BY f.length DESC LIMIT 20;"
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        
         prompt = f"""
         You are an expert PostgreSQL Database Administrator.
         Convert the following Plain English request into a valid PostgreSQL SELECT query for the `dvd_rental` database.
@@ -232,7 +235,7 @@ def convert_english_to_sql(english_text, api_key):
         2. Do NOT output any intro text, bullet points, Markdown, backticks, or reasoning.
         3. A response containing anything except SQL will be rejected.
         """
-        raw_response = generate_gemini_response(genai, prompt)
+        raw_response = generate_gemini_response(api_key, prompt)
         clean_sql = extract_clean_sql(raw_response)
         return clean_sql
     except Exception as e:
@@ -309,7 +312,7 @@ def predict_plan(plan_json):
                 encoders[col] = joblib.load(p)
 
         # Extract data from plan
-        root_node = plan_json[0]["Plan"]
+        root_node = get_root_plan(plan_json)
         actual_rows = extract_actual_rows(root_node)
         nodes = flatten_plan(root_node)
         df = pd.DataFrame(nodes)
@@ -354,8 +357,10 @@ def predict_plan(plan_json):
             actual = actual_rows[i]
             
             if actual > 0:
-                q_pg = max(pg_estimate/actual, actual/pg_estimate)
-                q_ai = max(ai_estimate/actual, actual/ai_estimate)
+                safe_pg = max(float(pg_estimate), 0.1)
+                safe_ai = max(float(ai_estimate), 0.1)
+                q_pg = max(safe_pg / actual, actual / safe_pg)
+                q_ai = max(safe_ai / actual, actual / safe_ai)
                 winner = "AI" if q_ai < q_pg else "PostgreSQL" if q_ai > q_pg else "Tie"
             else:
                 q_pg = 1.0
@@ -684,6 +689,13 @@ def live_query_mode():
     with col2:
         st.session_state.db_user = st.text_input("User", value=st.session_state.db_user)
         st.session_state.db_password = st.text_input("Password", value=st.session_state.db_password, type="password")
+    port_col, ssl_col = st.columns(2)
+    with port_col:
+        st.session_state.db_port = st.text_input("Port", value=str(st.session_state.db_port), placeholder="5432")
+    with ssl_col:
+        ssl_options = ["require", "prefer", "disable", "verify-ca", "verify-full"]
+        current_ssl = st.session_state.db_sslmode if st.session_state.db_sslmode in ssl_options else "require"
+        st.session_state.db_sslmode = st.selectbox("SSL mode", ssl_options, index=ssl_options.index(current_ssl), help="Use require for Neon, Supabase, and most hosted PostgreSQL services.")
 
     # ── Query Input ────────────────────────────────────────────────────────
     st.subheader("Query Input")
@@ -753,12 +765,7 @@ def live_query_mode():
 
         try:
             with st.spinner("Connecting to database and running EXPLAIN ANALYZE..."):
-                conn = psycopg2.connect(
-                    host=st.session_state.db_host,
-                    dbname=st.session_state.db_name,
-                    user=st.session_state.db_user,
-                    password=st.session_state.db_password
-                )
+                conn = connect_postgres()
                 cur = conn.cursor()
 
                 cur.execute(f"EXPLAIN (ANALYZE, FORMAT JSON) {query}")
@@ -909,8 +916,6 @@ def extract_json_response(text):
 def get_structured_ai_review(query, plan_json, api_key):
     """Use Gemini for a predictable, UI-ready query review."""
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
         prompt = f"""
 You are a PostgreSQL performance reviewer. Review the SQL and JSON execution-plan summary below.
 Return ONLY a JSON object with exactly these keys:
@@ -923,7 +928,7 @@ Return ONLY a JSON object with exactly these keys:
 SQL: {query}
 PLAN: {str(plan_json)[:2200]}
 """
-        raw = generate_gemini_response(genai, prompt)
+        raw = generate_gemini_response(api_key, prompt, response_mime_type="application/json")
         review = extract_json_response(raw)
         if review:
             review.setdefault("anti_patterns", [])
@@ -953,7 +958,7 @@ def get_index_recommendations(plan_json):
     if not plan_json:
         return []
     recommendations, seen = [], set()
-    for item in collect_plan_nodes(plan_json[0]["Plan"]):
+    for item in collect_plan_nodes(get_root_plan(plan_json)):
         node = item["node"]
         relation, node_type = node.get("Relation Name"), node.get("Node Type", "")
         filter_text = node.get("Filter") or node.get("Index Cond") or ""
@@ -978,7 +983,7 @@ def render_plan_explorer(plan_json):
     if not plan_json:
         return
     st.subheader("Plan Explorer")
-    nodes = collect_plan_nodes(plan_json[0]["Plan"])
+    nodes = collect_plan_nodes(get_root_plan(plan_json))
     labels = {item["id"]: f"{'  ' * item['depth']}↳ {item['node'].get('Node Type', 'Unknown')} · {item['node'].get('Relation Name', 'operation')}" for item in nodes}
     selected_id = st.selectbox("Inspect a plan node", options=list(labels), format_func=lambda item: labels[item], key="plan_node_explorer")
     selected = next(item["node"] for item in nodes if item["id"] == selected_id)
@@ -995,7 +1000,7 @@ def save_analysis(query, results_df, plan_json):
     if not query or results_df is None or results_df.empty:
         return
     try:
-        root = plan_json[0].get("Plan", {}) if plan_json else {}
+        root = get_root_plan(plan_json) if plan_json else {}
         payload = query + json.dumps(plan_json, sort_keys=True, default=str, ensure_ascii=True)
         fingerprint = hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()
         valid = results_df[results_df["actual_rows"] > 0]
@@ -1044,12 +1049,10 @@ def render_analysis_history():
 
 def get_sql_rewrite(query, api_key):
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
         prompt = f"""Rewrite this PostgreSQL SELECT query for potential performance improvement.
 Keep identical intent. Do not use DDL, DML, comments, or explanations. Return only one SQL SELECT statement.
 SQL: {query}"""
-        candidate = extract_clean_sql(generate_gemini_response(genai, prompt))
+        candidate = extract_clean_sql(generate_gemini_response(api_key, prompt))
         if not candidate.upper().lstrip().startswith("SELECT"):
             raise ValueError("The AI did not return a safe SELECT statement.")
         log_event("AI_REWRITE", "Generated a safe SELECT rewrite candidate.")
@@ -1064,12 +1067,7 @@ def compare_rewrite_plan(candidate_sql):
         raise ValueError("Only SELECT rewrites can be compared.")
     conn = None
     try:
-        conn = psycopg2.connect(
-            host=st.session_state.db_host,
-            dbname=st.session_state.db_name,
-            user=st.session_state.db_user,
-            password=st.session_state.db_password,
-        )
+        conn = connect_postgres()
         with conn.cursor() as cur:
             cur.execute(f"EXPLAIN (ANALYZE, FORMAT JSON) {candidate_sql}")
             result = cur.fetchone()
@@ -1102,8 +1100,8 @@ def render_rewrite_lab(query, plan_json):
                         try:
                             with st.spinner("Running EXPLAIN ANALYZE for the candidate…"):
                                 candidate_plan = compare_rewrite_plan(candidate)
-                            original_root = plan_json[0].get("Plan", {}) if plan_json else {}
-                            candidate_root = candidate_plan[0].get("Plan", {}) if candidate_plan else {}
+                            original_root = get_root_plan(plan_json) if plan_json else {}
+                            candidate_root = get_root_plan(candidate_plan) if candidate_plan else {}
                             c1, c2, c3 = st.columns(3)
                             c1.metric("Original cost", f"{original_root.get('Total Cost', 0):,.2f}")
                             c2.metric("Rewrite cost", f"{candidate_root.get('Total Cost', 0):,.2f}")

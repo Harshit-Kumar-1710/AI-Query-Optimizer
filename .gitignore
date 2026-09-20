@@ -16,4 +16,5 @@ node_features.csv
 .venv/
 __pycache__/
 *.py[cod]
+tmp/
 .DS_Store

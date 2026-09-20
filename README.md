@@ -85,7 +85,7 @@ Relational query planners (like PostgreSQL's cost-based optimizer) rely heavily 
 - **Machine Learning:** XGBoost, Scikit-Learn, Joblib, NumPy, Pandas
 - **Visualizations:** Plotly Express & Plotly Graph Objects
 - **Database:** PostgreSQL (`psycopg2-binary`), SQLite3
-- **Generative AI:** Google Gemini API (`google-generativeai`)
+- **Generative AI:** Google Gemini API (`google-genai`)
 
 ---
 
@@ -99,7 +99,7 @@ Relational query planners (like PostgreSQL's cost-based optimizer) rely heavily 
 
 1. **Clone the Repository:**
    ```bash
-   git clone https.github.com/Oxide06/AI-Query-Optimizer.git
+   git clone https://github.com/Oxide06/AI-Query-Optimizer.git
    cd AI-Query-Optimizer
    ```
 
@@ -150,7 +150,16 @@ DB_PORT = "5432"
 DB_NAME = "dvd_rental"
 DB_USER = "postgres"
 DB_PASSWORD = "your_postgres_password"
+DB_SSLMODE = "require"
 ```
+
+### Deployment troubleshooting - read this before adding secrets
+
+1. In Google AI Studio, create or copy a **Gemini API key** and add it as `GEMINI_API_KEY` in Streamlit Secrets. Do not paste a Google OAuth access token, a `Bearer ...` value, or a browser login token.
+2. If the app reports `ACCESS_TOKEN_TYPE_UNSUPPORTED`, the configured value is an OAuth token instead of a Gemini API key. Replace it in Streamlit Cloud **App settings -> Secrets**, save, and reboot the app.
+3. For Neon, Supabase, Aiven, and most hosted PostgreSQL providers, set `DB_SSLMODE = "require"`. Enter the exact host, port, database, user, and password supplied by the provider.
+4. For a local PostgreSQL instance, use `DB_HOST = "localhost"` and usually `DB_SSLMODE = "prefer"` or `"disable"`. A cloud-hosted Streamlit app cannot access your computer's localhost database.
+5. After changing `requirements.txt` or secrets, use Streamlit Cloud **Reboot app** and test **Sample Analysis** first, then **Live Query**.
 
 ---
 
