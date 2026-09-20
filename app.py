@@ -84,21 +84,18 @@ def validate_gemini_api_key(api_key):
 
 
 def generate_gemini_response(api_key, prompt, response_mime_type=None):
-    """Generate text through Google's Gemini SDK with automatic model fallback and dual SDK support."""
+    """Generate text using available Gemini SDK (google.genai or google.generativeai) with dynamic model discovery."""
     key = validate_gemini_api_key(api_key)
 
     user_configured_model = load_secret_value("GEMINI_MODEL", "")
     cached_model = st.session_state.get("cached_gemini_model_name")
 
-    candidates = []
-    if user_configured_model:
-        candidates.append(user_configured_model)
-    if cached_model:
-        candidates.append(cached_model)
-    candidates.extend(["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-2.5-flash"])
-
-    seen = set()
-    model_candidates = [m for m in candidates if not (m in seen or seen.add(m))]
+    known_candidates = [
+        "gemini-1.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-pro",
+        "gemini-1.0-pro",
+    ]
 
     last_error = None
 
@@ -108,7 +105,30 @@ def generate_gemini_response(api_key, prompt, response_mime_type=None):
         from google.genai import types
 
         client = genai.Client(api_key=key)
-        for model in model_candidates:
+
+        models_to_try = []
+        if user_configured_model:
+            models_to_try.append(user_configured_model.replace("models/", ""))
+        if cached_model:
+            models_to_try.append(cached_model.replace("models/", ""))
+
+        # Discover active models dynamically from the user's API key
+        try:
+            available_models = [
+                m.name.replace("models/", "")
+                for m in client.models.list()
+                if hasattr(m, "name")
+            ]
+            models_to_try.extend([m for m in available_models if "flash" in m or "pro" in m])
+        except Exception:
+            pass
+
+        models_to_try.extend(known_candidates)
+
+        seen = set()
+        models_to_try = [m for m in models_to_try if m and not (m in seen or seen.add(m))]
+
+        for model in models_to_try:
             try:
                 config_kwargs = {"temperature": 0.2}
                 if response_mime_type:
@@ -134,7 +154,28 @@ def generate_gemini_response(api_key, prompt, response_mime_type=None):
         import google.generativeai as genai
 
         genai.configure(api_key=key)
-        for model in model_candidates:
+
+        models_to_try = []
+        if user_configured_model:
+            models_to_try.append(user_configured_model)
+        if cached_model:
+            models_to_try.append(cached_model)
+
+        try:
+            available = [
+                m.name for m in genai.list_models()
+                if "generateContent" in getattr(m, "supported_generation_methods", [])
+            ]
+            models_to_try.extend(available)
+        except Exception:
+            pass
+
+        models_to_try.extend(known_candidates)
+
+        seen = set()
+        models_to_try = [m for m in models_to_try if m and not (m in seen or seen.add(m))]
+
+        for model in models_to_try:
             try:
                 m = genai.GenerativeModel(model)
                 response = m.generate_content(prompt)
@@ -148,7 +189,8 @@ def generate_gemini_response(api_key, prompt, response_mime_type=None):
     except Exception as e:
         last_error = e
 
-    raise ValueError(f"Gemini API Error (tried models {model_candidates}): {last_error}")
+    raise ValueError(f"Gemini API Error: Could not generate response. Error: {last_error}")
+
 
 
 def get_llm_insights(query, plan_json, api_key):
