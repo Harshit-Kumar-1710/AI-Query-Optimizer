@@ -7,4 +7,5 @@ plotly
 xgboost
 scikit-learn
 google-genai>=1.0.0
+google-generativeai
 

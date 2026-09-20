@@ -84,26 +84,72 @@ def validate_gemini_api_key(api_key):
 
 
 def generate_gemini_response(api_key, prompt, response_mime_type=None):
-    """Generate text through Google's current Gemini SDK with one stable model choice."""
-    from google import genai
-    from google.genai import types
-
+    """Generate text through Google's Gemini SDK with automatic model fallback and dual SDK support."""
     key = validate_gemini_api_key(api_key)
-    model_name = load_secret_value("GEMINI_MODEL", "gemini-2.5-flash")
-    config = types.GenerateContentConfig(
-        temperature=0.2,
-        response_mime_type=response_mime_type,
-    )
-    client = genai.Client(api_key=key)
-    response = client.models.generate_content(
-        model=model_name,
-        contents=prompt,
-        config=config,
-    )
-    text = (getattr(response, "text", None) or "").strip()
-    if not text:
-        raise ValueError("Gemini returned no text. Check the selected model, quota, and API key permissions.")
-    return text
+
+    user_configured_model = load_secret_value("GEMINI_MODEL", "")
+    cached_model = st.session_state.get("cached_gemini_model_name")
+
+    candidates = []
+    if user_configured_model:
+        candidates.append(user_configured_model)
+    if cached_model:
+        candidates.append(cached_model)
+    candidates.extend(["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-2.5-flash"])
+
+    seen = set()
+    model_candidates = [m for m in candidates if not (m in seen or seen.add(m))]
+
+    last_error = None
+
+    # 1. Try google.genai (new SDK)
+    try:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=key)
+        for model in model_candidates:
+            try:
+                config_kwargs = {"temperature": 0.2}
+                if response_mime_type:
+                    config_kwargs["response_mime_type"] = response_mime_type
+                config = types.GenerateContentConfig(**config_kwargs)
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=config,
+                )
+                text = (getattr(response, "text", None) or "").strip()
+                if text:
+                    st.session_state.cached_gemini_model_name = model
+                    return text
+            except Exception as e:
+                last_error = e
+                continue
+    except Exception as e:
+        last_error = e
+
+    # 2. Try google.generativeai (fallback SDK)
+    try:
+        import google.generativeai as genai
+
+        genai.configure(api_key=key)
+        for model in model_candidates:
+            try:
+                m = genai.GenerativeModel(model)
+                response = m.generate_content(prompt)
+                text = (getattr(response, "text", None) or "").strip()
+                if text:
+                    st.session_state.cached_gemini_model_name = model
+                    return text
+            except Exception as e:
+                last_error = e
+                continue
+    except Exception as e:
+        last_error = e
+
+    raise ValueError(f"Gemini API Error (tried models {model_candidates}): {last_error}")
+
 
 def get_llm_insights(query, plan_json, api_key):
     try:
